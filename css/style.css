@@ -654,7 +654,9 @@ img { max-width: 100%; display: block; }
   background: var(--cream-2);
   color: var(--sage);
 }
+.wish-item__badge--admin { background: var(--gold); color: var(--white); }
 .wish-item__msg { font-size: 0.95rem; color: var(--ink); }
+.rf-note { font-size: 0.8rem; color: #b0574f; min-height: 1em; margin: 0; }
 .wish-item__time { font-size: 0.75rem; color: var(--muted); margin-top: 6px; }
 
 /* ============================================================

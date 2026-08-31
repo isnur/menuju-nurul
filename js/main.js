@@ -64,6 +64,8 @@
       replyPh: "Tulis balasan...",
       sendReply: "Kirim",
       cancel: "Batal",
+      coupleBadge: "Mempelai",
+      sendFail: "Gagal mengirim. Coba lagi ya.",
       attendBadge: { "Hadir": "Hadir", "Tidak Hadir": "Tidak Hadir", "Masih Ragu": "Masih Ragu" },
       guestFallback: "Tamu Undangan",
       docTitle: (names) => "Undangan Pernikahan " + names,
@@ -116,6 +118,8 @@
       replyPh: "Write a reply...",
       sendReply: "Send",
       cancel: "Cancel",
+      coupleBadge: "The Couple",
+      sendFail: "Failed to send. Please try again.",
       attendBadge: { "Hadir": "Attending", "Tidak Hadir": "Not Attending", "Masih Ragu": "Maybe" },
       guestFallback: "Dear Guest",
       docTitle: (names) => "The Wedding of " + names,
@@ -134,6 +138,16 @@
 
   /* ---------- Nama tamu dari ?to= ---------- */
   const guestParam = (params.get("to") || "").trim();
+
+  /* ---------- Mode mempelai ----------
+     Buka undangan sekali dengan ?admin=KUNCI_RAHASIA — kunci tersimpan di
+     perangkat, dan semua kiriman berikutnya bertanda "✓ Mempelai".
+     Kunci divalidasi di server (Apps Script), bukan di sini. */
+  let adminKey = (params.get("admin") || "").trim();
+  try {
+    if (adminKey) localStorage.setItem("wedding-admin", adminKey);
+    else adminKey = localStorage.getItem("wedding-admin") || "";
+  } catch {}
 
   /* ---------- Data statis dari CONFIG ---------- */
   const names = `${CONFIG.groom.nickname} & ${CONFIG.bride.nickname}`;
@@ -526,11 +540,13 @@
 
     let html = visible
       .map((w) => {
+        const adminBadge = `<span class="wish-item__badge wish-item__badge--admin">✓ ${esc(t().coupleBadge)}</span>`;
         const reps = (replies[w.id] || [])
           .map(
             (r) => `
             <div class="wish-reply">
               <span class="wish-item__name">${esc(r.name)}</span>
+              ${r.admin ? adminBadge : ""}
               <p class="wish-item__msg">${esc(r.msg)}</p>
               <div class="wish-item__time">${timeAgo(r.time)}</div>
             </div>`
@@ -541,20 +557,21 @@
             ? `
             <form class="wish-reply-form" data-parent="${esc(w.id)}">
               <input type="text" class="rf-name" placeholder="${esc(t().phName)}"
-                required maxlength="60" value="${esc(guestParam || "")}" />
+                required maxlength="60" value="${esc(adminKey ? names : guestParam || "")}" />
               <textarea class="rf-msg" placeholder="${esc(t().replyPh)}"
                 rows="2" required maxlength="500"></textarea>
               <div class="wish-reply-form__actions">
                 <button type="submit" class="btn btn--primary btn--small">${esc(t().sendReply)}</button>
                 <button type="button" class="btn btn--small wish-reply-cancel">${esc(t().cancel)}</button>
               </div>
+              <p class="rf-note"></p>
             </form>`
             : "";
         return `
         <div class="wish-item">
           <div class="wish-item__head">
             <span class="wish-item__name">${esc(w.name)}</span>
-            ${w.attend ? `<span class="wish-item__badge">${esc(t().attendBadge[w.attend] || w.attend)}</span>` : ""}
+            ${w.admin ? adminBadge : w.attend ? `<span class="wish-item__badge">${esc(t().attendBadge[w.attend] || w.attend)}</span>` : ""}
           </div>
           <p class="wish-item__msg">${esc(w.msg)}</p>
           <div class="wish-item__foot">
@@ -615,29 +632,48 @@
       time: Date.now(),
     };
     if (!reply.name || !reply.msg) return;
-    form.querySelector('button[type="submit"]').disabled = true;
-    sendWish(reply, () => {
+    const btn = form.querySelector('button[type="submit"]');
+    btn.disabled = true;
+    sendWish(reply, (res) => {
+      if (!res.ok) {
+        btn.disabled = false;
+        form.querySelector(".rf-note").textContent = res.error || t().sendFail;
+        return;
+      }
       activeReplyId = null;
       fetchWishes();
     });
   });
 
-  // Kirim satu ucapan/balasan ke Sheet (atau localStorage sebagai fallback)
+  // Kirim satu ucapan/balasan ke server; fallback localStorage hanya saat
+  // server tidak terjangkau (bukan saat server menolak).
   function sendWish(wish, onDone) {
-    const local = localLoad();
-    local.push(wish);
-    localSave(local);
-    if (GB_URL) {
-      fetch(GB_URL, {
-        method: "POST",
-        headers: { "Content-Type": "text/plain;charset=utf-8" },
-        body: JSON.stringify(wish),
-      })
-        .then(onDone)
-        .catch(onDone);
-    } else {
-      onDone();
+    if (!GB_URL) {
+      const local = localLoad();
+      local.push(wish);
+      localSave(local);
+      onDone({ ok: true, offline: true });
+      return;
     }
+    fetch(GB_URL, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body: JSON.stringify(Object.assign({}, wish, { adminKey: adminKey })),
+    })
+      .then((r) => r.json())
+      .then((res) =>
+        onDone(
+          res && res.ok
+            ? { ok: true }
+            : { ok: false, error: (res && res.error) || "" }
+        )
+      )
+      .catch(() => {
+        const local = localLoad();
+        local.push(wish);
+        localSave(local);
+        onDone({ ok: true, offline: true });
+      });
   }
 
   function normalize(row) {
@@ -648,6 +684,7 @@
       time: row.time ? new Date(row.time).getTime() : Date.now(),
       id: row.id || "",
       parentId: row.parentId || "",
+      admin: row.admin === true || row.admin === "1",
     };
   }
 
@@ -682,42 +719,36 @@
 
     const submitBtn = $("wishForm").querySelector('button[type="submit"]');
     submitBtn.disabled = true;
-
-    const local = localLoad();
-    local.push(wish);
-    localSave(local);
-
-    const done = (msg) => {
+    const note = (msg) => {
       $("wishNote").textContent = msg;
-      $("wishMessage").value = "";
-      $("wishAttend").selectedIndex = 0;
-      submitBtn.disabled = false;
       setTimeout(() => { $("wishNote").textContent = ""; }, 6000);
-      fetchWishes();
     };
 
-    if (GB_URL) {
-      // text/plain agar tidak memicu CORS preflight di Apps Script
-      fetch(GB_URL, {
-        method: "POST",
-        headers: { "Content-Type": "text/plain;charset=utf-8" },
-        body: JSON.stringify(wish),
-      })
-        .then(() => done(t().thanksSaved))
-        .catch(() => done(t().thanksLocal));
-    } else if (CONFIG.whatsapp) {
-      const text =
-        `Ucapan & RSVP Pernikahan\n` +
-        `Nama: ${wish.name}\nKehadiran: ${wish.attend}\nUcapan: ${wish.msg}`;
-      window.open(
-        `https://wa.me/${CONFIG.whatsapp}?text=${encodeURIComponent(text)}`,
-        "_blank",
-        "noopener"
-      );
-      done(t().thanksWa);
-    } else {
-      done(t().thanks);
-    }
+    sendWish(wish, (res) => {
+      submitBtn.disabled = false;
+      if (!res.ok) {
+        note(res.error || t().sendFail);
+        return;
+      }
+      if (!GB_URL && CONFIG.whatsapp) {
+        const text =
+          `Ucapan & RSVP Pernikahan\n` +
+          `Nama: ${wish.name}\nKehadiran: ${wish.attend}\nUcapan: ${wish.msg}`;
+        window.open(
+          `https://wa.me/${CONFIG.whatsapp}?text=${encodeURIComponent(text)}`,
+          "_blank",
+          "noopener"
+        );
+        note(t().thanksWa);
+      } else if (res.offline) {
+        note(GB_URL ? t().thanksLocal : t().thanks);
+      } else {
+        note(t().thanksSaved);
+      }
+      $("wishMessage").value = "";
+      $("wishAttend").selectedIndex = 0;
+      fetchWishes();
+    });
   });
 
   /* ---------- Inisialisasi ---------- */

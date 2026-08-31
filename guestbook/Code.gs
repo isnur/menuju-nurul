@@ -1,16 +1,28 @@
 /**
- * BUKU TAMU UNDANGAN — Google Apps Script (v2: mendukung balasan)
- * Menyimpan ucapan/RSVP + balasan ke Google Spreadsheet.
+ * BUKU TAMU UNDANGAN — Google Apps Script (v3)
+ * Ucapan/RSVP + balasan + badge mempelai + rate limit.
  *
- * UPDATE dari v1: ada kolom `id` dan `parentId` (untuk fitur balas ucapan).
- * Baris lama tanpa id tetap terbaca (id dibuat dari nomor baris).
+ * FITUR:
+ * - Kiriman yang menyertakan ADMIN_KEY yang benar ditandai kolom `admin`
+ *   -> tampil dengan badge "✓ Mempelai" di undangan. Tamu bebas memakai
+ *   nama apa pun, tapi hanya mempelai yang bisa mendapat badge ini.
+ * - Rate limit global: maksimal MAX_PER_MINUTE kiriman per menit.
  *
- * Cara update deploy yang sudah ada:
- * 1. Buka Apps Script project-mu, ganti seluruh kode dengan file ini, Save.
- * 2. Deploy > Manage deployments > klik ikon pensil > Version: New version
- *    > Deploy. (URL tetap sama, config.js tidak perlu diubah.)
+ * PENTING SEBELUM DEPLOY:
+ * 1. Ganti ADMIN_KEY di bawah dengan kunci rahasiamu sendiri (bebas, anggap
+ *    seperti password). JANGAN commit kunci asli ke repo publik — cukup
+ *    diganti di editor Apps Script saja.
+ * 2. Deploy > Manage deployments > pensil > Version: New version > Deploy.
+ *    (URL tetap sama.)
+ *
+ * Mempelai membalas ucapan dengan membuka undangan lewat:
+ *   https://domain-undanganmu/?admin=KUNCI_RAHASIA
+ * (sekali buka, tersimpan di perangkat; selanjutnya semua kiriman dari
+ * perangkat itu otomatis bertanda mempelai.)
  */
 
+var ADMIN_KEY = "GANTI_DENGAN_KUNCI_RAHASIA"; // <-- WAJIB diganti!
+var MAX_PER_MINUTE = 10;
 var SHEET_NAME = "Ucapan";
 
 function getSheet_() {
@@ -18,7 +30,7 @@ function getSheet_() {
   var sh = ss.getSheetByName(SHEET_NAME);
   if (!sh) {
     sh = ss.insertSheet(SHEET_NAME);
-    sh.appendRow(["time", "name", "attend", "msg", "id", "parentId"]);
+    sh.appendRow(["time", "name", "attend", "msg", "id", "parentId", "admin"]);
   }
   return sh;
 }
@@ -38,6 +50,7 @@ function doGet() {
       msg: String(r[3] || ""),
       id: String(r[4] || "row" + (i + 1)),
       parentId: String(r[5] || ""),
+      admin: String(r[6] || "") === "1",
     });
   }
   return json_(out);
@@ -46,6 +59,13 @@ function doGet() {
 // POST -> tambah satu ucapan atau balasan
 function doPost(e) {
   try {
+    if (rateLimited_()) {
+      return json_({
+        ok: false,
+        error: "Terlalu banyak kiriman. Coba lagi sebentar lagi.",
+      });
+    }
+
     var data = {};
     if (e && e.postData && e.postData.contents) {
       data = JSON.parse(e.postData.contents);
@@ -55,13 +75,33 @@ function doPost(e) {
     var msg = clean_(data.msg || data.message).slice(0, 500);
     var parentId = clean_(data.parentId).slice(0, 40);
     var id = clean_(data.id).slice(0, 40) || Utilities.getUuid();
+    var isAdmin =
+      clean_(data.adminKey) !== "" && clean_(data.adminKey) === ADMIN_KEY;
+
     if (!name || !msg) {
       return json_({ ok: false, error: "Nama dan ucapan wajib diisi." });
     }
-    getSheet_().appendRow([new Date(), name, attend, msg, id, parentId]);
+
+    getSheet_().appendRow([
+      new Date(), name, attend, msg, id, parentId, isAdmin ? "1" : "",
+    ]);
     return json_({ ok: true, id: id });
   } catch (err) {
     return json_({ ok: false, error: String(err) });
+  }
+}
+
+// Rate limit global sederhana: hitung kiriman per 60 detik
+function rateLimited_() {
+  var lock = LockService.getScriptLock();
+  try {
+    lock.tryLock(3000);
+    var cache = CacheService.getScriptCache();
+    var n = Number(cache.get("rl") || 0) + 1;
+    cache.put("rl", String(n), 60);
+    return n > MAX_PER_MINUTE;
+  } finally {
+    try { lock.releaseLock(); } catch (ignored) {}
   }
 }
 
