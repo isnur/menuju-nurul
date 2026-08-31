@@ -59,13 +59,6 @@ function doGet() {
 // POST -> tambah satu ucapan atau balasan
 function doPost(e) {
   try {
-    if (rateLimited_()) {
-      return json_({
-        ok: false,
-        error: "Terlalu banyak kiriman. Coba lagi sebentar lagi.",
-      });
-    }
-
     var data = {};
     if (e && e.postData && e.postData.contents) {
       data = JSON.parse(e.postData.contents);
@@ -77,6 +70,15 @@ function doPost(e) {
     var id = clean_(data.id).slice(0, 40) || Utilities.getUuid();
     var isAdmin =
       clean_(data.adminKey) !== "" && clean_(data.adminKey) === ADMIN_KEY;
+
+    // Rate limit hanya untuk tamu — mempelai (kunci valid) bebas
+    // membalas beruntun tanpa jeda.
+    if (!isAdmin && rateLimited_()) {
+      return json_({
+        ok: false,
+        error: "Terlalu banyak kiriman. Coba lagi sebentar lagi.",
+      });
+    }
 
     if (!name || !msg) {
       return json_({ ok: false, error: "Nama dan ucapan wajib diisi." });
