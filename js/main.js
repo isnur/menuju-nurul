@@ -67,7 +67,8 @@
       coupleBadge: "Mempelai",
       sendFail: "Gagal mengirim. Coba lagi ya.",
       attendBadge: { "Hadir": "Hadir", "Tidak Hadir": "Tidak Hadir", "Masih Ragu": "Masih Ragu" },
-      guestFallback: "Tamu Undangan",
+      guestFallback: "Tamu",
+      guestPlusOne: "& Pasangan",
       docTitle: (names) => "Undangan Pernikahan " + names,
     },
     en: {
@@ -121,14 +122,33 @@
       coupleBadge: "The Couple",
       sendFail: "Failed to send. Please try again.",
       attendBadge: { "Hadir": "Attending", "Tidak Hadir": "Not Attending", "Masih Ragu": "Maybe" },
-      guestFallback: "Dear Guest",
+      guestFallback: "Guest",
+      guestPlusOne: "& Partner",
       docTitle: (names) => "The Wedding of " + names,
     },
   };
 
-  // Bahasa aktif: ?lang= di URL > pilihan tersimpan > default ID
+  /* ---------- Hash tamu: ?g=<base64url JSON {to, lang}> ----------
+     Dibuat lewat admin.html. Satu-satunya cara mengidentifikasi tamu —
+     ?to= mentah tidak didukung lagi. Tanpa ?g= valid, tamu dianggap
+     tidak dikenal dan form ucapan disembunyikan (lihat inisialisasi). */
+  function decodeGuestHash(hash) {
+    try {
+      const b64 = hash.replace(/-/g, "+").replace(/_/g, "/");
+      const json = decodeURIComponent(escape(atob(b64)));
+      const obj = JSON.parse(json);
+      return obj && typeof obj === "object" ? obj : null;
+    } catch {
+      return null;
+    }
+  }
+
   const params = new URLSearchParams(location.search);
-  let lang = (params.get("lang") || "").toLowerCase();
+  const gHash = (params.get("g") || "").trim();
+  const gData = gHash ? decodeGuestHash(gHash) : null;
+
+  // Bahasa aktif: data dari ?g= > ?lang= di URL > pilihan tersimpan > default ID
+  let lang = ((gData && gData.lang) || params.get("lang") || "").toLowerCase();
   if (lang !== "id" && lang !== "en") {
     try { lang = localStorage.getItem("wedding-lang") || "id"; } catch { lang = "id"; }
   }
@@ -136,18 +156,21 @@
   const t = () => I18N[lang];
   const pick = (obj, key) => (lang === "en" && obj[key + "En"] ? obj[key + "En"] : obj[key]);
 
-  /* ---------- Nama tamu dari ?to= ---------- */
-  const guestParam = (params.get("to") || "").trim();
+  /* ---------- Nama tamu dari ?g= ---------- */
+  const guestParam = ((gData && gData.to) || "").trim();
+  // Tamu dikenal (punya ?g= valid dengan nama) -> boleh isi ucapan, dan
+  // field nama dikunci karena sudah diketahui. Tanpa ini, form disembunyikan.
+  const guestLocked = !!guestParam;
 
   /* ---------- Mode mempelai ----------
-     Buka undangan sekali dengan ?admin=KUNCI_RAHASIA — kunci tersimpan di
-     perangkat, dan semua kiriman berikutnya bertanda "✓ Mempelai".
-     Kunci divalidasi di server (Apps Script), bukan di sini. */
-  let adminKey = (params.get("admin") || "").trim();
-  try {
-    if (adminKey) localStorage.setItem("wedding-admin", adminKey);
-    else adminKey = localStorage.getItem("wedding-admin") || "";
-  } catch {}
+     Aktif hanya selama URL saat ini punya ?admin=KUNCI_RAHASIA — tidak
+     disimpan di perangkat, jadi tiap kiriman bertanda "✓ Mempelai" harus
+     memakai link yang mengandung ?admin=. Kunci divalidasi di server
+     (Apps Script), bukan di sini. */
+  const adminKey = (params.get("admin") || "").trim();
+
+  // Boleh mengirim ucapan/RSVP: tamu dikenal (?g=) atau mode mempelai.
+  const canWish = guestLocked || !!adminKey;
 
   /* ---------- Data statis dari CONFIG ---------- */
   const names = `${CONFIG.groom.nickname} & ${CONFIG.bride.nickname}`;
@@ -249,13 +272,19 @@
       const v = t()[el.dataset.i18n];
       if (typeof v === "string") el.textContent = v;
     });
+    // Sembunyikan ajakan mengisi ucapan/RSVP kalau tamu tidak bisa mengisi.
+    $("wishesSub").hidden = !canWish;
 
     // Placeholder form
     $("wishName").placeholder = t().phName;
     $("wishMessage").placeholder = t().phMessage;
 
     // Nama tamu & tanggal
-    $("guestName").textContent = guestParam || t().guestFallback;
+    $("guestName").textContent = adminKey
+      ? names
+      : guestParam
+      ? `${guestParam} ${t().guestPlusOne}`
+      : t().guestFallback;
     $("coverDate").textContent = pick(CONFIG, "weddingDateText");
     $("heroDate").textContent = pick(CONFIG, "weddingDateText");
 
@@ -557,7 +586,8 @@
             ? `
             <form class="wish-reply-form" data-parent="${esc(w.id)}">
               <input type="text" class="rf-name" placeholder="${esc(t().phName)}"
-                required maxlength="60" value="${esc(adminKey ? names : guestParam || "")}" />
+                required maxlength="60" value="${esc(adminKey ? names : guestParam || "")}"
+                ${guestLocked && !adminKey ? "hidden" : ""} />
               <textarea class="rf-msg" placeholder="${esc(t().replyPh)}"
                 rows="2" required maxlength="500"></textarea>
               <div class="wish-reply-form__actions">
@@ -576,7 +606,7 @@
           <p class="wish-item__msg">${esc(w.msg)}</p>
           <div class="wish-item__foot">
             <span class="wish-item__time">${timeAgo(w.time)}</span>
-            ${w.id ? `<button type="button" class="wish-item__reply" data-reply="${esc(w.id)}">${esc(t().reply)}</button>` : ""}
+            ${w.id && canWish ? `<button type="button" class="wish-item__reply" data-reply="${esc(w.id)}">${esc(t().reply)}</button>` : ""}
           </div>
           ${reps ? `<div class="wish-replies">${reps}</div>` : ""}
           ${replyForm}
@@ -703,7 +733,18 @@
       .catch(() => renderWishes(localLoad()));
   }
 
-  if (guestParam) $("wishName").value = guestParam;
+  // Tanpa tamu dikenal (?g= valid) ataupun mode mempelai, form ucapan
+  // tidak ditampilkan sama sekali.
+  if (!canWish) {
+    $("wishForm").hidden = true;
+  } else if (adminKey) {
+    // Mempelai bisa mengganti nama pengirim (Isnur / Nurul / keduanya).
+    $("wishName").value = names;
+  } else {
+    // Tamu dikenal lewat ?g= — nama sudah pasti, field tidak perlu ditampilkan.
+    $("wishName").value = guestParam;
+    $("wishName").hidden = true;
+  }
 
   $("wishForm").addEventListener("submit", (e) => {
     e.preventDefault();
