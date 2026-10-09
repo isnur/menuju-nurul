@@ -99,8 +99,8 @@ const CONFIG = {
         "We introduced each other to our families, taking a more serious step forward together.",
     },
     {
-      year: "10 Oktober 2026",
-      yearEn: "October 10th, 2026",
+      year: "21 November 2026",
+      yearEn: "November 21st, 2026",
       title: "Tunangan",
       titleEn: "Engagement",
       text: "Dengan restu kedua keluarga, kami mengikat janji dalam sebuah pertunangan yang penuh haru dan bahagia.",
